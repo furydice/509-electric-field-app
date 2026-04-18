@@ -8,8 +8,6 @@ workflows:
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.fiveohninelectric.field
-        certificate: 509Electric AppStore
-        provisioning_profile: 509Electric AppStore
       node: 20.11.0
     scripts:
       - name: Install dependencies
