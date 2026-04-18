@@ -1,0 +1,24 @@
+{
+  "appId": "com.fiveohninelectric.field",
+  "appName": "509 Electric",
+  "webDir": "www",
+  "server": {
+    "url": "https://automation.509electric.com/app",
+    "cleartext": false
+  },
+  "ios": {
+    "scheme": "509 Electric",
+    "backgroundColor": "#0f172a"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1000,
+      "backgroundColor": "#0f172a",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "style": "dark",
+      "backgroundColor": "#0f172a"
+    }
+  }
+}
