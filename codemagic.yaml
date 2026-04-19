@@ -19,7 +19,7 @@ workflows:
           fi
       - name: Set build number
         script: |
-          agvtool new-version -all $BUILD_NUMBER
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" ios/App/App/Info.plist
       - name: Sync Capacitor
         script: npx cap sync ios
       - name: Set up code signing
