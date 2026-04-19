@@ -74,8 +74,10 @@ workflows:
           sed -i '' "s|CF_SEC_PLACEHOLDER|$CF_CLIENT_SECRET|g" ios/App/App/CFViewController.swift
 
           # Point storyboard to our subclass
-          sed -i '' 's/customClass="CAPBridgeViewController"/customClass="CFViewController"/g' \
-            ios/App/App/Base.lproj/Main.storyboard
+          find ios/App -name "*.storyboard" | xargs grep -l "CAPBridgeViewController" || echo "WARNING: CAPBridgeViewController not found in any storyboard"
+          find ios/App -name "*.storyboard" | xargs sed -i '' 's/customClass="CAPBridgeViewController"/customClass="CFViewController"/g'
+          echo "Storyboard patch applied"
+          grep -r "CFViewController" ios/App --include="*.storyboard" || echo "WARNING: CFViewController not in storyboard after patch"
 
           # Add file to Xcode project
           gem install xcodeproj --no-document 2>/dev/null
