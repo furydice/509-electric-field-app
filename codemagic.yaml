@@ -5,6 +5,8 @@ workflows:
     integrations:
       app_store_connect: Codemagic_ASC_API
     environment:
+      groups:
+        - CF_Access
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.fiveohninelectric.field
@@ -12,27 +14,102 @@ workflows:
     scripts:
       - name: Install dependencies
         script: npm install
+
       - name: Add iOS platform (first run only)
         script: |
           if [ ! -d "ios" ]; then
             npx cap add ios
           fi
+
+      - name: Inject CF auth view controller
+        script: |
+          cat > ios/App/App/CFViewController.swift << 'SWIFT'
+          import UIKit
+          import Capacitor
+          import WebKit
+
+          class CFViewController: CAPBridgeViewController, WKNavigationDelegate {
+
+            private let cfId  = "CF_ID_PLACEHOLDER"
+            private let cfSec = "CF_SEC_PLACEHOLDER"
+
+            override func viewDidLoad() {
+              super.viewDidLoad()
+              webView?.navigationDelegate = self
+              let js = """
+              (function(){
+                const id='\(self.cfId)',sec='\(self.cfSec)',h='automation.509electric.com';
+                const orig=window.fetch.bind(window);
+                window.fetch=function(i,o){
+                  let u=typeof i==='string'?i:(i&&i.url)||'';
+                  if(u.includes(h)||u.startsWith('/')){
+                    o=o||{};o.headers=Object.assign({},o.headers||{},
+                    {'CF-Access-Client-Id':id,'CF-Access-Client-Secret':sec});
+                  }
+                  return orig(i,o);
+                };
+              })();
+              """
+              let s=WKUserScript(source:js,injectionTime:.atDocumentStart,forMainFrameOnly:false)
+              webView?.configuration.userContentController.addUserScript(s)
+            }
+
+            func webView(_ webView:WKWebView,decidePolicyFor action:WKNavigationAction,
+                         decisionHandler:@escaping(WKNavigationActionPolicy)->Void){
+              guard let url=action.request.url,
+                    url.host?.contains("509electric.com")==true,
+                    action.request.value(forHTTPHeaderField:"CF-Access-Client-Id")==nil
+              else { decisionHandler(.allow); return }
+              decisionHandler(.cancel)
+              var r=URLRequest(url:url)
+              r.setValue(cfId,forHTTPHeaderField:"CF-Access-Client-Id")
+              r.setValue(cfSec,forHTTPHeaderField:"CF-Access-Client-Secret")
+              webView.load(r)
+            }
+          }
+          SWIFT
+
+          # Substitute real credentials
+          sed -i '' "s|CF_ID_PLACEHOLDER|$CF_CLIENT_ID|g" ios/App/App/CFViewController.swift
+          sed -i '' "s|CF_SEC_PLACEHOLDER|$CF_CLIENT_SECRET|g" ios/App/App/CFViewController.swift
+
+          # Point storyboard to our subclass
+          sed -i '' 's/customClass="CAPBridgeViewController"/customClass="CFViewController"/g' \
+            ios/App/App/Base.lproj/Main.storyboard
+
+          # Add file to Xcode project
+          gem install xcodeproj --no-document 2>/dev/null
+          ruby - << 'RUBY'
+          require 'xcodeproj'
+          proj = Xcodeproj::Project.open('ios/App/App.xcodeproj')
+          target = proj.targets.first
+          grp = proj.main_group.find_subpath('App', true)
+          ref = grp.new_file('CFViewController.swift')
+          target.add_file_references([ref])
+          proj.save
+          RUBY
+
       - name: Set build number and compliance
         script: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" ios/App/App/Info.plist
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" ios/App/App/Info.plist
+
       - name: Sync Capacitor
         script: npx cap sync ios
+
       - name: Set up code signing
         script: xcode-project use-profiles
+
       - name: Build IPA
         script: |
           xcode-project build-ipa \
             --workspace "ios/App/App.xcworkspace" \
             --scheme "App"
+
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
+
     publishing:
       app_store_connect:
         auth: integration
