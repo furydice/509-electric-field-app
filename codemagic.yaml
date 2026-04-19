@@ -39,6 +39,8 @@ workflows:
               let js = """
               (function(){
                 const id='\(self.cfId)',sec='\(self.cfSec)',h='automation.509electric.com';
+
+                // Override fetch to add CF headers
                 const orig=window.fetch.bind(window);
                 window.fetch=function(i,o){
                   let u=typeof i==='string'?i:(i&&i.url)||'';
@@ -48,6 +50,23 @@ workflows:
                   }
                   return orig(i,o);
                 };
+
+                // Override img.src to load via fetch (adds CF headers to image requests)
+                const imgDesc=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');
+                Object.defineProperty(HTMLImageElement.prototype,'src',{
+                  set:function(url){
+                    if(url&&(url.includes(h)||(url.startsWith('/')&&!url.startsWith('//')))
+                       &&!url.startsWith('blob:')&&!url.startsWith('data:')){
+                      const el=this;
+                      const full=url.startsWith('/')?'https://'+h+url:url;
+                      window.fetch(full)
+                        .then(r=>r.blob())
+                        .then(b=>{imgDesc.set.call(el,URL.createObjectURL(b));})
+                        .catch(()=>{imgDesc.set.call(el,url);});
+                    } else { imgDesc.set.call(this,url); }
+                  },
+                  get:function(){return imgDesc.get.call(this);}
+                });
               })();
               """
               let s=WKUserScript(source:js,injectionTime:.atDocumentStart,forMainFrameOnly:false)
