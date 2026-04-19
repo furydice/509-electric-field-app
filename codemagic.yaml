@@ -17,6 +17,9 @@ workflows:
           if [ ! -d "ios" ]; then
             npx cap add ios
           fi
+      - name: Set build number
+        script: |
+          agvtool new-version -all $BUILD_NUMBER
       - name: Sync Capacitor
         script: npx cap sync ios
       - name: Set up code signing
