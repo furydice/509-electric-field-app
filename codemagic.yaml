@@ -75,7 +75,9 @@ workflows:
 
           # Point storyboard to our subclass
           find ios/App -name "*.storyboard" | xargs grep -l "CAPBridgeViewController" || echo "WARNING: CAPBridgeViewController not found in any storyboard"
-          find ios/App -name "*.storyboard" | xargs sed -i '' 's/customClass="CAPBridgeViewController"/customClass="CFViewController"/g'
+          find ios/App -name "*.storyboard" | xargs sed -i '' \
+            -e 's/customClass="CAPBridgeViewController"/customClass="CFViewController"/g' \
+            -e 's/customClass="CFViewController" customModule="Capacitor"/customClass="CFViewController" customModule="App"/g'
           echo "Storyboard patch applied"
           grep -r "CFViewController" ios/App --include="*.storyboard" || echo "WARNING: CFViewController not in storyboard after patch"
 
