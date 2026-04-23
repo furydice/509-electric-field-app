@@ -8,7 +8,8 @@
   },
   "ios": {
     "scheme": "509 Electric",
-    "backgroundColor": "#0f172a"
+    "backgroundColor": "#0f172a",
+    "scrollEnabled": false
   },
   "plugins": {
     "SplashScreen": {
