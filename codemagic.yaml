@@ -36,6 +36,9 @@ workflows:
             override func viewDidLoad() {
               super.viewDidLoad()
               webView?.navigationDelegate = self
+              // Disable iOS back-swipe gesture — this is a native app, not a browser.
+              // Without this, the edge-swipe triggers decidePolicyFor which reloads the page.
+              webView?.allowsBackForwardNavigationGestures = false
               let js = """
               (function(){
                 const id='\(self.cfId)',sec='\(self.cfSec)',h='automation.509electric.com';
@@ -75,6 +78,9 @@ workflows:
 
             func webView(_ webView:WKWebView,decidePolicyFor action:WKNavigationAction,
                          decisionHandler:@escaping(WKNavigationActionPolicy)->Void){
+              // Back-forward navigations load from WKWebView's internal history cache —
+              // they don't need CF headers and should never trigger a page reload.
+              if action.navigationType == .backForward { decisionHandler(.allow); return }
               guard let url=action.request.url,
                     url.host?.contains("509electric.com")==true,
                     action.request.value(forHTTPHeaderField:"CF-Access-Client-Id")==nil
