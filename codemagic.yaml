@@ -39,6 +39,11 @@ workflows:
               // Disable iOS back-swipe gesture — this is a native app, not a browser.
               // Without this, the edge-swipe triggers decidePolicyFor which reloads the page.
               webView?.allowsBackForwardNavigationGestures = false
+              // Enable Safari Web Inspector / Inspect.dev for this WebView (iOS 16.4+).
+              // Required for remote debugging from a Mac (Safari) or Windows (Inspect.dev) over USB.
+              if #available(iOS 16.4, *) {
+                webView?.isInspectable = true
+              }
               let js = """
               (function(){
                 const id='\(self.cfId)',sec='\(self.cfSec)',h='automation.509electric.com';
