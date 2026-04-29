@@ -12,6 +12,9 @@
     "scrollEnabled": false
   },
   "plugins": {
+    "CapacitorHttp": {
+      "enabled": false
+    },
     "SplashScreen": {
       "launchShowDuration": 1000,
       "backgroundColor": "#0f172a",

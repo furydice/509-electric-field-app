@@ -3,3 +3,8 @@ ios/
 android/
 .DS_Store
 *.log
+
+# Signing keys — never commit
+certs/
+*.p12
+*.mobileprovision

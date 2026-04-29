@@ -21,6 +21,16 @@ workflows:
             npx cap add ios
           fi
 
+      - name: Generate iOS icons and splash from assets/
+        script: |
+          # @capacitor/assets reads assets/icon.png (1024x1024 RGB) and
+          # assets/splash.png (2732x2732) and writes the full AppIcon.appiconset
+          # + Splash.imageset into ios/App/App/Assets.xcassets/.
+          # Without this step, `cap add ios` ships Capacitor's placeholder icons,
+          # which Apple rejects under Guideline 2.3.8.
+          npx @capacitor/assets generate --ios
+          ls -la ios/App/App/Assets.xcassets/AppIcon.appiconset/ | head -20
+
       - name: Inject CF auth view controller
         script: |
           cat > ios/App/App/CFViewController.swift << 'SWIFT'
@@ -65,16 +75,43 @@ workflows:
                   set:function(url){
                     if(url&&(url.includes(h)||(url.startsWith('/')&&!url.startsWith('//')))
                        &&!url.startsWith('blob:')&&!url.startsWith('data:')){
+                      // If the URL already carries ?_k= (API key), the server doesn't
+                      // require CF headers — skip the fetch shim so loading="lazy" works
+                      // and we don't leak blob URLs.
+                      if(/[?&]_k=/.test(url)){ imgDesc.set.call(this,url); return; }
                       const el=this;
                       const full=url.startsWith('/')?'https://'+h+url:url;
+                      const prevBlob=el._cfBlob;
                       window.fetch(full)
                         .then(r=>r.blob())
-                        .then(b=>{imgDesc.set.call(el,URL.createObjectURL(b));})
+                        .then(b=>{
+                          const newBlob=URL.createObjectURL(b);
+                          imgDesc.set.call(el,newBlob);
+                          el._cfBlob=newBlob;
+                          const cleanup=()=>{
+                            if(prevBlob&&prevBlob!==newBlob){
+                              try{URL.revokeObjectURL(prevBlob);}catch(_){}
+                            }
+                          };
+                          el.addEventListener('load',cleanup,{once:true});
+                          el.addEventListener('error',cleanup,{once:true});
+                        })
                         .catch(()=>{imgDesc.set.call(el,url);});
                     } else { imgDesc.set.call(this,url); }
                   },
                   get:function(){return imgDesc.get.call(this);}
                 });
+
+                // Also wrap setAttribute so img.setAttribute('src', url) and innerHTML-built
+                // <img> tags route through the property setter above (and thus the fetch shim).
+                const setAttrOrig=Element.prototype.setAttribute;
+                Element.prototype.setAttribute=function(name,value){
+                  if(this instanceof HTMLImageElement&&name&&name.toLowerCase()==='src'&&value){
+                    this.src=value;
+                    return;
+                  }
+                  return setAttrOrig.apply(this,arguments);
+                };
               })();
               """
               let s=WKUserScript(source:js,injectionTime:.atDocumentStart,forMainFrameOnly:false)
