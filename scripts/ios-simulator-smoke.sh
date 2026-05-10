@@ -55,10 +55,10 @@ xcrun simctl install "$SIM_ID" "$APP_PATH"
 xcrun simctl launch "$SIM_ID" com.fiveohninelectric.field | tee "$ARTIFACT_DIR/launch.log"
 
 sleep "${IOS_SIMULATOR_SMOKE_WAIT:-20}"
-(
-  cd "$ARTIFACT_DIR"
-  xcrun simctl io "$SIM_ID" screenshot launch.png
-)
+TMP_SCREENSHOT="/tmp/509-electric-launch.png"
+rm -f "$TMP_SCREENSHOT"
+xcrun simctl io "$SIM_ID" screenshot --type=png "$TMP_SCREENSHOT"
+cp "$TMP_SCREENSHOT" "$ARTIFACT_DIR/launch.png"
 xcrun simctl spawn "$SIM_ID" log show --last 2m --style compact > "$ARTIFACT_DIR/device.log" 2>/dev/null || true
 
 echo "Simulator smoke complete."
