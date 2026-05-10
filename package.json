@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "description": "509 Electric Field App",
   "scripts": {
-    "sync": "npx cap sync"
+    "sync": "npx cap sync",
+    "ios:prepare": "bash scripts/prepare-ios-local.sh",
+    "ios:open": "npx cap open ios",
+    "ios:sim": "bash scripts/ios-simulator-smoke.sh"
   },
   "dependencies": {
     "@capacitor/app": "^6.0.0",
