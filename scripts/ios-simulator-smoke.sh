@@ -4,9 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-mkdir -p build/simulator
+ARTIFACT_DIR="$ROOT_DIR/build/simulator"
+DERIVED_DATA_DIR="$ROOT_DIR/build/DerivedData"
+mkdir -p "$ARTIFACT_DIR"
 
-bash scripts/prepare-ios-local.sh | tee build/simulator/prepare.log
+bash scripts/prepare-ios-local.sh | tee "$ARTIFACT_DIR/prepare.log"
 
 if [[ -n "${IOS_SIMULATOR_ID:-}" ]]; then
   SIM_ID="$IOS_SIMULATOR_ID"
@@ -38,23 +40,26 @@ xcodebuild \
   -scheme "App" \
   -configuration Debug \
   -destination "platform=iOS Simulator,id=$SIM_ID" \
-  -derivedDataPath build/DerivedData \
+  -derivedDataPath "$DERIVED_DATA_DIR" \
   CODE_SIGNING_ALLOWED=NO \
-  build | tee build/simulator/xcodebuild.log
+  build | tee "$ARTIFACT_DIR/xcodebuild.log"
 
-APP_PATH="$(find build/DerivedData/Build/Products/Debug-iphonesimulator -maxdepth 2 -name "*.app" -print -quit)"
+APP_PATH="$(find "$DERIVED_DATA_DIR/Build/Products/Debug-iphonesimulator" -maxdepth 2 -name "*.app" -print -quit)"
 if [[ -z "$APP_PATH" ]]; then
-  echo "Could not find built .app under build/DerivedData/Build/Products/Debug-iphonesimulator"
+  echo "Could not find built .app under $DERIVED_DATA_DIR/Build/Products/Debug-iphonesimulator"
   exit 1
 fi
 
 xcrun simctl uninstall "$SIM_ID" com.fiveohninelectric.field 2>/dev/null || true
 xcrun simctl install "$SIM_ID" "$APP_PATH"
-xcrun simctl launch "$SIM_ID" com.fiveohninelectric.field | tee build/simulator/launch.log
+xcrun simctl launch "$SIM_ID" com.fiveohninelectric.field | tee "$ARTIFACT_DIR/launch.log"
 
 sleep "${IOS_SIMULATOR_SMOKE_WAIT:-20}"
-xcrun simctl io "$SIM_ID" screenshot build/simulator/launch.png
-xcrun simctl spawn "$SIM_ID" log show --last 2m --style compact > build/simulator/device.log 2>/dev/null || true
+(
+  cd "$ARTIFACT_DIR"
+  xcrun simctl io "$SIM_ID" screenshot launch.png
+)
+xcrun simctl spawn "$SIM_ID" log show --last 2m --style compact > "$ARTIFACT_DIR/device.log" 2>/dev/null || true
 
 echo "Simulator smoke complete."
 echo "Screenshot: build/simulator/launch.png"
