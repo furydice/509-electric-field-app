@@ -30,7 +30,7 @@ workflows:
         distribution_type: app_store
         bundle_identifier: com.fiveohninelectric.field
       node: 20.11.0
-    scripts:
+    scripts: &ios_build_scripts
       - name: Install dependencies
         script: npm install
 
@@ -209,3 +209,33 @@ workflows:
         auth: integration
         submit_to_testflight: true
         submit_to_app_store: false
+
+  ios-adhoc:
+    # Builds an Ad Hoc IPA signed for devices registered in the Apple Developer
+    # Portal — installs via MDM (Mosyle) without App Store / TestFlight / ABM.
+    # Reuses the ios-testflight build scripts via YAML anchor; the only
+    # differences are the distribution_type and the absence of a publishing
+    # block (we just want the IPA as a downloadable artifact).
+    #
+    # Prereq: each target iPad's UDID must be registered in
+    # developer.apple.com > Devices BEFORE running this. Codemagic's
+    # `xcode-project use-profiles` auto-generates an ad-hoc profile that
+    # includes whichever devices are registered at build time.
+    name: iOS Ad Hoc
+    max_build_duration: 60
+    integrations:
+      app_store_connect: Codemagic_ASC_API
+    environment:
+      groups:
+        - CF_Access
+      ios_signing:
+        distribution_type: ad_hoc
+        bundle_identifier: com.fiveohninelectric.field
+      node: 20.11.0
+    scripts: *ios_build_scripts
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    # No publishing block — Codemagic surfaces the IPA as a downloadable
+    # artifact in the build page. Download it and upload to Mosyle > Apps.
