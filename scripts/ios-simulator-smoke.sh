@@ -57,6 +57,27 @@ if [[ -z "$APP_PATH" ]]; then
   exit 1
 fi
 
+capture_stable_screenshot() {
+  local sim_id="$1"
+  local output_path="$2"
+  local attempt
+
+  for attempt in 1 2 3; do
+    xcrun simctl io "$sim_id" screenshot --type=png "$output_path"
+    test -s "$output_path"
+    if swift scripts/check-simulator-screenshot.swift "$output_path"; then
+      return 0
+    fi
+
+    mv "$output_path" "${output_path%.png}-unstable-${attempt}.png"
+    echo "Screenshot was not fully rendered; retrying in 10 seconds."
+    sleep 10
+  done
+
+  echo "No stable rendered screenshot was captured for $output_path."
+  exit 1
+}
+
 smoke_device() {
   local label="$1"
   local sim_id="$2"
@@ -73,8 +94,7 @@ smoke_device() {
   xcrun simctl launch --terminate-running-process "$sim_id" com.fiveohninelectric.field \
     | tee "$ARTIFACT_DIR/${label}-launch.log"
   sleep "$wait_seconds"
-  xcrun simctl io "$sim_id" screenshot --type=png "$ARTIFACT_DIR/${label}-launch.png"
-  test -s "$ARTIFACT_DIR/${label}-launch.png"
+  capture_stable_screenshot "$sim_id" "$ARTIFACT_DIR/${label}-launch.png"
 
   xcrun simctl spawn "$sim_id" log show --last 3m --style compact \
     --predicate 'process == "App"' > "$ARTIFACT_DIR/${label}-device.log" 2>/dev/null || true
@@ -87,9 +107,15 @@ smoke_device() {
   xcrun simctl terminate "$sim_id" com.fiveohninelectric.field 2>/dev/null || true
   xcrun simctl launch "$sim_id" com.fiveohninelectric.field \
     | tee "$ARTIFACT_DIR/${label}-relaunch.log"
-  sleep 5
-  xcrun simctl io "$sim_id" screenshot --type=png "$ARTIFACT_DIR/${label}-relaunch.png"
-  test -s "$ARTIFACT_DIR/${label}-relaunch.png"
+  sleep "$wait_seconds"
+  capture_stable_screenshot "$sim_id" "$ARTIFACT_DIR/${label}-relaunch.png"
+
+  xcrun simctl spawn "$sim_id" log show --last 3m --style compact \
+    --predicate 'process == "App"' > "$ARTIFACT_DIR/${label}-relaunch-device.log" 2>/dev/null || true
+  if grep -Eiq 'Terminating app due to uncaught exception|Fatal error|SIGABRT|EXC_CRASH' "$ARTIFACT_DIR/${label}-relaunch-device.log"; then
+    echo "Native crash signature found after relaunch on $label."
+    exit 1
+  fi
 }
 
 smoke_device iphone "$IPHONE_ID"
