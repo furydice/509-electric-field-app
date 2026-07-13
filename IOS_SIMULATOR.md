@@ -10,13 +10,16 @@ Use this path from Windows:
 2. Open Codemagic.
 3. Run the `iOS Simulator Smoke` workflow.
 4. Download the artifacts after the build finishes:
-   - `build/simulator/launch.png`
+   - `build/simulator/iphone-launch.png`
+   - `build/simulator/iphone-relaunch.png`
+   - `build/simulator/ipad-launch.png`
+   - `build/simulator/ipad-relaunch.png`
    - `build/simulator/prepare.log`
    - `build/simulator/xcodebuild.log`
-   - `build/simulator/launch.log`
-   - `build/simulator/device.log`
+   - `build/simulator/iphone-device.log`
+   - `build/simulator/ipad-device.log`
 
-The workflow uses the existing `CF_Access` environment group, builds the Capacitor iOS wrapper on a cloud Mac, injects the Cloudflare Access headers into the WebView, launches the app in an iPhone simulator, and captures a screenshot.
+The workflow uses the existing `CF_Access` environment group, builds the Capacitor iOS wrapper on a cloud Mac, injects the Cloudflare Access headers into the WebView, then clean-installs, cold-launches, and relaunches the app on both iPhone and iPad simulators. It captures screenshots and app-process logs for each device and fails when a native crash signature is present.
 
 The normal `iOS TestFlight` workflow is still the upload path for real iPhones through TestFlight.
 
@@ -32,18 +35,23 @@ npm install
 npm run ios:sim
 ```
 
-The script builds the Capacitor iOS wrapper, injects the Cloudflare Access headers into the WebView, launches the app in the first available iPhone simulator, and saves:
+The script builds the Capacitor iOS wrapper, injects the Cloudflare Access headers into the WebView, and tests both iPhone and iPad simulators. It saves:
 
-- `build/simulator/launch.png`
+- `build/simulator/iphone-launch.png`
+- `build/simulator/iphone-relaunch.png`
+- `build/simulator/ipad-launch.png`
+- `build/simulator/ipad-relaunch.png`
 - `build/simulator/prepare.log`
 - `build/simulator/xcodebuild.log`
-- `build/simulator/launch.log`
-- `build/simulator/device.log`
+- `build/simulator/iphone-device.log`
+- `build/simulator/ipad-device.log`
 
 To pick a specific simulator:
 
 ```bash
-IOS_SIMULATOR_NAME="iPhone 16 Pro" npm run ios:sim
+IOS_IPHONE_SIMULATOR_NAME="iPhone 16 Pro" \
+IOS_IPAD_SIMULATOR_NAME="iPad Air 11-inch" \
+npm run ios:sim
 ```
 
 ## Codemagic Run
