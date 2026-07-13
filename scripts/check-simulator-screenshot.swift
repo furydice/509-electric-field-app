@@ -30,7 +30,8 @@ guard let context = CGContext(
   bitsPerComponent: 8,
   bytesPerRow: bytesPerRow,
   space: CGColorSpaceCreateDeviceRGB(),
-  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+  bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+    | CGImageAlphaInfo.premultipliedLast.rawValue
 ) else {
   fputs("Could not create screenshot analysis context.\n", stderr)
   exit(2)
