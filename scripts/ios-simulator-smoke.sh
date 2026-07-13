@@ -62,7 +62,7 @@ capture_stable_screenshot() {
   local output_path="$2"
   local attempt
 
-  for attempt in 1 2 3; do
+  for attempt in 1 2 3 4; do
     xcrun simctl io "$sim_id" screenshot --type=png "$output_path"
     test -s "$output_path"
     if swift scripts/check-simulator-screenshot.swift "$output_path"; then
@@ -70,8 +70,8 @@ capture_stable_screenshot() {
     fi
 
     mv "$output_path" "${output_path%.png}-unstable-${attempt}.png"
-    echo "Screenshot was not fully rendered; retrying in 10 seconds."
-    sleep 10
+    echo "Screenshot was not fully rendered; retrying in 15 seconds."
+    sleep 15
   done
 
   echo "No stable rendered screenshot was captured for $output_path."
