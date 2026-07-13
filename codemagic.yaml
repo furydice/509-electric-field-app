@@ -5,6 +5,7 @@ workflows:
     environment:
       groups:
         - CF_Access
+      xcode: latest
       node: 20.11.0
     scripts:
       - name: Install dependencies
@@ -29,10 +30,24 @@ workflows:
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.fiveohninelectric.field
+      xcode: latest
       node: 20.11.0
     scripts: &ios_build_scripts
       - name: Install dependencies
         script: npm install
+
+      - name: Verify Apple toolchain and release number
+        script: |
+          xcodebuild -version
+          XCODE_MAJOR="$(xcodebuild -version | awk '/^Xcode / { split($2, v, "."); print v[1] }')"
+          if [ -z "$XCODE_MAJOR" ] || [ "$XCODE_MAJOR" -lt 26 ]; then
+            echo "Xcode 26 or later is required for App Store Connect uploads."
+            exit 1
+          fi
+          if [ "${CM_WORKFLOW_ID:-}" = "ios-testflight" ] && [ "${BUILD_NUMBER:-0}" -lt 42 ]; then
+            echo "TestFlight build number must be at least 42."
+            exit 1
+          fi
 
       - name: Add iOS platform (first run only)
         script: |
@@ -269,6 +284,8 @@ workflows:
         auth: integration
         submit_to_testflight: true
         submit_to_app_store: false
+        beta_groups:
+          - 509 Employees
 
   ios-adhoc:
     # Builds an Ad Hoc IPA signed for devices registered in the Apple Developer
@@ -291,6 +308,7 @@ workflows:
       ios_signing:
         distribution_type: ad_hoc
         bundle_identifier: com.fiveohninelectric.field
+      xcode: latest
       node: 20.11.0
     scripts: *ios_build_scripts
 

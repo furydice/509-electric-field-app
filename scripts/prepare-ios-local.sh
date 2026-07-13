@@ -16,6 +16,13 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
   exit 1
 fi
 
+XCODE_MAJOR="$(xcodebuild -version | awk '/^Xcode / { split($2, v, "."); print v[1] }')"
+if [[ -z "$XCODE_MAJOR" || "$XCODE_MAJOR" -lt 26 ]]; then
+  echo "Xcode 26 or later is required. Found:"
+  xcodebuild -version
+  exit 1
+fi
+
 if ! command -v pod >/dev/null 2>&1; then
   echo "CocoaPods was not found. Install it on the Mac, for example:"
   echo "  sudo gem install cocoapods"

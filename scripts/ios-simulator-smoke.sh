@@ -10,36 +10,43 @@ mkdir -p "$ARTIFACT_DIR"
 
 bash scripts/prepare-ios-local.sh | tee "$ARTIFACT_DIR/prepare.log"
 
-if [[ -n "${IOS_SIMULATOR_ID:-}" ]]; then
-  SIM_ID="$IOS_SIMULATOR_ID"
-elif [[ -n "${IOS_SIMULATOR_NAME:-}" ]]; then
-  SIM_ID="$(xcrun simctl list devices available -j | ruby -rjson -e '
-    name = ENV.fetch("IOS_SIMULATOR_NAME")
+select_simulator() {
+  local kind="$1"
+  local requested_name="$2"
+  xcrun simctl list devices available -j | SIM_KIND="$kind" REQUESTED_NAME="$requested_name" ruby -rjson -e '
+    kind = ENV.fetch("SIM_KIND")
+    requested = ENV.fetch("REQUESTED_NAME", "")
     devices = JSON.parse(STDIN.read).fetch("devices").values.flatten
-    sim = devices.find { |d| d["name"] == name && d["isAvailable"] != false }
-    abort("No available simulator named #{name}") unless sim
+      .select { |d| d["isAvailable"] != false }
+    match = kind == "iphone" ? /iPhone/i : /iPad/i
+    candidates = devices.select { |d| d["name"].to_s.match?(match) }
+    sim = if requested.empty?
+      candidates.find { |d| d["state"] == "Booted" } || candidates.last
+    else
+      candidates.find { |d| d["name"] == requested } ||
+        candidates.find { |d| d["name"].to_s.include?(requested) }
+    end
+    abort("No available #{kind} simulator#{requested.empty? ? "" : " matching #{requested}"}") unless sim
     puts sim.fetch("udid")
-  ')"
-else
-  SIM_ID="$(xcrun simctl list devices available -j | ruby -rjson -e '
-    devices = JSON.parse(STDIN.read).fetch("devices").values.flatten
-    sim = devices.find { |d| d["name"].to_s.include?("iPhone") && d["state"] == "Booted" && d["isAvailable"] != false } ||
-          devices.find { |d| d["name"].to_s.include?("iPhone") && d["isAvailable"] != false }
-    abort("No available iPhone simulator found") unless sim
-    puts sim.fetch("udid")
-  ')"
+  '
+}
+
+IPHONE_ID="${IOS_IPHONE_SIMULATOR_ID:-}"
+IPAD_ID="${IOS_IPAD_SIMULATOR_ID:-}"
+if [[ -z "$IPHONE_ID" ]]; then
+  IPHONE_ID="$(select_simulator iphone "${IOS_IPHONE_SIMULATOR_NAME:-}")"
+fi
+if [[ -z "$IPAD_ID" ]]; then
+  IPAD_ID="$(select_simulator ipad "${IOS_IPAD_SIMULATOR_NAME:-}")"
 fi
 
-echo "Using simulator: $SIM_ID"
-xcrun simctl boot "$SIM_ID" 2>/dev/null || true
-xcrun simctl bootstatus "$SIM_ID" -b
-open -a Simulator 2>/dev/null || true
+printf 'iPhone simulator: %s\niPad simulator: %s\n' "$IPHONE_ID" "$IPAD_ID" | tee "$ARTIFACT_DIR/devices.txt"
 
 xcodebuild \
   -workspace "ios/App/App.xcworkspace" \
   -scheme "App" \
   -configuration Debug \
-  -destination "platform=iOS Simulator,id=$SIM_ID" \
+  -destination "generic/platform=iOS Simulator" \
   -derivedDataPath "$DERIVED_DATA_DIR" \
   CODE_SIGNING_ALLOWED=NO \
   build | tee "$ARTIFACT_DIR/xcodebuild.log"
@@ -50,17 +57,44 @@ if [[ -z "$APP_PATH" ]]; then
   exit 1
 fi
 
-xcrun simctl uninstall "$SIM_ID" com.fiveohninelectric.field 2>/dev/null || true
-xcrun simctl install "$SIM_ID" "$APP_PATH"
-xcrun simctl launch "$SIM_ID" com.fiveohninelectric.field | tee "$ARTIFACT_DIR/launch.log"
+smoke_device() {
+  local label="$1"
+  local sim_id="$2"
+  local wait_seconds="${IOS_SIMULATOR_SMOKE_WAIT:-20}"
 
-sleep "${IOS_SIMULATOR_SMOKE_WAIT:-20}"
-TMP_SCREENSHOT="/tmp/509-electric-launch.png"
-rm -f "$TMP_SCREENSHOT"
-xcrun simctl io "$SIM_ID" screenshot --type=png "$TMP_SCREENSHOT"
-cp "$TMP_SCREENSHOT" "$ARTIFACT_DIR/launch.png"
-xcrun simctl spawn "$SIM_ID" log show --last 2m --style compact > "$ARTIFACT_DIR/device.log" 2>/dev/null || true
+  echo "Testing $label simulator: $sim_id"
+  xcrun simctl boot "$sim_id" 2>/dev/null || true
+  xcrun simctl bootstatus "$sim_id" -b
+  open -a Simulator 2>/dev/null || true
+
+  # A clean install makes the first launch a true cold start.
+  xcrun simctl uninstall "$sim_id" com.fiveohninelectric.field 2>/dev/null || true
+  xcrun simctl install "$sim_id" "$APP_PATH"
+  xcrun simctl launch --terminate-running-process "$sim_id" com.fiveohninelectric.field \
+    | tee "$ARTIFACT_DIR/${label}-launch.log"
+  sleep "$wait_seconds"
+  xcrun simctl io "$sim_id" screenshot --type=png "$ARTIFACT_DIR/${label}-launch.png"
+  test -s "$ARTIFACT_DIR/${label}-launch.png"
+
+  xcrun simctl spawn "$sim_id" log show --last 3m --style compact \
+    --predicate 'process == "App"' > "$ARTIFACT_DIR/${label}-device.log" 2>/dev/null || true
+  if grep -Eiq 'Terminating app due to uncaught exception|Fatal error|SIGABRT|EXC_CRASH' "$ARTIFACT_DIR/${label}-device.log"; then
+    echo "Native crash signature found on $label."
+    exit 1
+  fi
+
+  # Verify an ordinary terminate/relaunch path after the clean-install launch.
+  xcrun simctl terminate "$sim_id" com.fiveohninelectric.field 2>/dev/null || true
+  xcrun simctl launch "$sim_id" com.fiveohninelectric.field \
+    | tee "$ARTIFACT_DIR/${label}-relaunch.log"
+  sleep 5
+  xcrun simctl io "$sim_id" screenshot --type=png "$ARTIFACT_DIR/${label}-relaunch.png"
+  test -s "$ARTIFACT_DIR/${label}-relaunch.png"
+}
+
+smoke_device iphone "$IPHONE_ID"
+smoke_device ipad "$IPAD_ID"
 
 echo "Simulator smoke complete."
-echo "Screenshot: build/simulator/launch.png"
+echo "Screenshots: build/simulator/iphone-*.png and build/simulator/ipad-*.png"
 echo "Logs: build/simulator/*.log"
