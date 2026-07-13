@@ -60,12 +60,17 @@ fi
 capture_stable_screenshot() {
   local sim_id="$1"
   local output_path="$2"
+  local reference_path="${3:-}"
   local attempt
 
   for attempt in 1 2 3 4; do
     xcrun simctl io "$sim_id" screenshot --type=png "$output_path"
     test -s "$output_path"
-    if swift scripts/check-simulator-screenshot.swift "$output_path"; then
+    if [[ -n "$reference_path" ]] \
+      && swift scripts/check-simulator-screenshot.swift "$output_path" "$reference_path"; then
+      return 0
+    elif [[ -z "$reference_path" ]] \
+      && swift scripts/check-simulator-screenshot.swift "$output_path"; then
       return 0
     fi
 
@@ -108,7 +113,10 @@ smoke_device() {
   xcrun simctl launch "$sim_id" com.fiveohninelectric.field \
     | tee "$ARTIFACT_DIR/${label}-relaunch.log"
   sleep "$wait_seconds"
-  capture_stable_screenshot "$sim_id" "$ARTIFACT_DIR/${label}-relaunch.png"
+  capture_stable_screenshot \
+    "$sim_id" \
+    "$ARTIFACT_DIR/${label}-relaunch.png" \
+    "$ARTIFACT_DIR/${label}-launch.png"
 
   xcrun simctl spawn "$sim_id" log show --last 3m --style compact \
     --predicate 'process == "App"' > "$ARTIFACT_DIR/${label}-relaunch-device.log" 2>/dev/null || true
