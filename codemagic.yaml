@@ -289,7 +289,11 @@ workflows:
         submit_to_testflight: true
         submit_to_app_store: false
         beta_groups:
-          - Testers
+          # Internal group: needs no beta review, so it works today.
+          # The external group "Testers" is blocked by
+          # BETA_CONTRACT_MISSING (Apple support case 20000138361635);
+          # add it back once Apple restores the beta contract.
+          - 509 Electric
 
   ios-adhoc:
     # Builds an Ad Hoc IPA signed for devices registered in the Apple Developer
