@@ -261,3 +261,476 @@ workflows:
       - /tmp/xcodebuild_logs/*.log
     # No publishing block — Codemagic surfaces the IPA as a downloadable
     # artifact in the build page. Download it and upload to Mosyle > Apps.
+
+  field-app-android:
+    # Android port of ios-testflight. `android/` is gitignored (same convention as
+    # `ios/`), so the whole native project — including the Cloudflare Access bridge
+    # — is regenerated from scratch on every build. See MainActivity.java /
+    # CFAccessWebViewClient.java / CFAccessJsShim.java below for why this needs a
+    # real native WebViewClient and not just WebView.loadUrl(url, extraHeaders):
+    # that API only covers the very first page load, and Android's
+    # shouldInterceptRequest exposes GET headers but never a POST/PUT/DELETE body,
+    # so the bridge is split GET-vs-body-bearing between native code and a
+    # document-start JS shim (mirrors CFViewController.swift's WKUserScript).
+    name: 509 Electric Field App Android
+    max_build_duration: 60
+    environment:
+      groups:
+        - CF_Access
+      android_signing:
+        - field_app_upload_keystore
+      java: 17
+      node: 20.11.0
+    scripts:
+      - name: Install dependencies
+        script: npm install
+
+      - name: Add Android platform (first run only)
+        script: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+
+      - name: Generate Android icons and splash from assets/
+        script: |
+          # Mirrors "Generate iOS icons and splash from assets/": @capacitor/assets
+          # reads assets/icon.png + assets/splash.png and writes the mipmap/drawable
+          # resources into android/app/src/main/res/. Without this, `cap add android`
+          # ships Capacitor's placeholder launcher icon.
+          npx @capacitor/assets generate --android
+          ls -la android/app/src/main/res/mipmap-xxxhdpi/ 2>/dev/null || true
+
+      - name: Patch AndroidManifest.xml (camera/mic permissions + intent queries)
+        script: |
+          set -euo pipefail
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if ! grep -q "android.permission.CAMERA" "$MANIFEST"; then
+            perl -0pi -e 's{(\s*<uses-permission android:name="android.permission.INTERNET" />)}{\n\n    <!-- Camera/mic capture via <input capture> in the web app (job site photos\n         and video), handled by Capacitor'"'"'s default BridgeWebChromeClient.\n         Mirrors iOS'"'"'s NSCameraUsageDescription / NSMicrophoneUsageDescription.\n         The queries block is required for resolveActivity() to find a camera\n         app at targetSdk 30+ package-visibility rules. -->\n    <queries>\n        <intent><action android:name="android.media.action.IMAGE_CAPTURE" /></intent>\n        <intent><action android:name="android.media.action.VIDEO_CAPTURE" /></intent>\n    </queries>\n$1\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />}' "$MANIFEST"
+          fi
+          grep -q "android.permission.CAMERA" "$MANIFEST" || { echo "ERROR: AndroidManifest.xml patch failed"; exit 1; }
+          cat "$MANIFEST"
+
+      - name: Set compile/target SDK to 35 and wire release signing
+        script: |
+          set -euo pipefail
+          # Google Play requires new apps/updates to target API 35 (Android 15) as of
+          # Aug 2025, moving to API 36 on Aug 31 2026 — revisit before then.
+          cat > android/variables.gradle << 'GRADLE'
+          ext {
+              minSdkVersion = 22
+              compileSdkVersion = 35
+              targetSdkVersion = 35
+              androidxActivityVersion = '1.8.0'
+              androidxAppCompatVersion = '1.6.1'
+              androidxCoordinatorLayoutVersion = '1.2.0'
+              androidxCoreVersion = '1.12.0'
+              androidxFragmentVersion = '1.6.2'
+              coreSplashScreenVersion = '1.0.1'
+              androidxWebkitVersion = '1.9.0'
+              junitVersion = '4.13.2'
+              androidxJunitVersion = '1.1.5'
+              androidxEspressoCoreVersion = '3.5.1'
+              cordovaAndroidVersion = '10.1.1'
+          }
+          GRADLE
+
+          cat > android/app/build.gradle << 'GRADLE'
+          apply plugin: 'com.android.application'
+
+          android {
+              namespace "com.fiveohninelectric.field"
+              compileSdk rootProject.ext.compileSdkVersion
+              defaultConfig {
+                  applicationId "com.fiveohninelectric.field"
+                  minSdkVersion rootProject.ext.minSdkVersion
+                  targetSdkVersion rootProject.ext.targetSdkVersion
+                  // -PversionCode=$BUILD_NUMBER is passed on the gradlew invocation below
+                  // (Play Console requires a strictly increasing versionCode per upload).
+                  versionCode project.hasProperty('versionCode') ? (project.versionCode as Integer) : 1
+                  versionName project.hasProperty('versionName') ? project.versionName : "1.0"
+                  testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+                  aaptOptions {
+                      ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+                  }
+              }
+              signingConfigs {
+                  release {
+                      // Populated by the android_signing: field_app_upload_keystore
+                      // integration above, which decodes the uploaded keystore and
+                      // exports these env vars. Guarded so a plain local ./gradlew
+                      // build without them still succeeds unsigned.
+                      if (System.getenv()["CM_KEYSTORE_PATH"]) {
+                          storeFile file(System.getenv()["CM_KEYSTORE_PATH"])
+                          storePassword System.getenv()["CM_KEYSTORE_PASSWORD"]
+                          keyAlias System.getenv()["CM_KEY_ALIAS"]
+                          keyPassword System.getenv()["CM_KEY_PASSWORD"]
+                      }
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+                  }
+              }
+          }
+
+          repositories {
+              flatDir{
+                  dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+              }
+          }
+
+          dependencies {
+              implementation fileTree(include: ['*.jar'], dir: 'libs')
+              implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+              implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+              implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+              // capacitor-android depends on this as `implementation`, not `api`, so
+              // it isn't on our compile classpath transitively — needed directly for
+              // WebViewCompat/WebViewFeature in the CF Access bridge below.
+              implementation "androidx.webkit:webkit:$androidxWebkitVersion"
+              implementation project(':capacitor-android')
+              testImplementation "junit:junit:$junitVersion"
+              androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+              androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+              implementation project(':capacitor-cordova-android-plugins')
+          }
+
+          apply from: 'capacitor.build.gradle'
+
+          try {
+              def servicesJSON = file('google-services.json')
+              if (servicesJSON.text) {
+                  apply plugin: 'com.google.gms.google-services'
+              }
+          } catch(Exception e) {
+              logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+          }
+          GRADLE
+
+      - name: Inject CF Access bridge (native WebViewClient + JS shim)
+        script: |
+          set -euo pipefail
+          PKG_DIR="android/app/src/main/java/com/fiveohninelectric/field"
+          mkdir -p "$PKG_DIR"
+
+          cat > "$PKG_DIR/CFAccessJsShim.java" << 'JAVA'
+          package com.fiveohninelectric.field;
+
+          /**
+           * JS source for the document-start script that patches window.fetch and
+           * HTMLImageElement.prototype.src to carry CF-Access-Client-Id /
+           * CF-Access-Client-Secret headers. Ports the WKUserScript body injected by
+           * ios/App/App/CFViewController.swift. Exists specifically to cover requests
+           * whose bodies CFAccessWebViewClient.shouldInterceptRequest cannot see or
+           * replay (POST/PUT/DELETE fetch calls) — everything else (main-frame page
+           * load, every GET sub-resource) is handled natively there instead.
+           */
+          final class CFAccessJsShim {
+
+              private CFAccessJsShim() {}
+
+              static String build(String clientId, String clientSecret, String gatedHost) {
+                  return "(function(){\n"
+                      + "  const id='" + escape(clientId) + "',sec='" + escape(clientSecret) + "',h='" + escape(gatedHost) + "';\n"
+                      + "  const orig=window.fetch.bind(window);\n"
+                      + "  window.fetch=function(i,o){\n"
+                      + "    let u=typeof i==='string'?i:(i&&i.url)||'';\n"
+                      + "    if(u.includes(h)||u.startsWith('/')){\n"
+                      + "      o=o||{};o.headers=Object.assign({},o.headers||{},\n"
+                      + "      {'CF-Access-Client-Id':id,'CF-Access-Client-Secret':sec});\n"
+                      + "    }\n"
+                      + "    return orig(i,o);\n"
+                      + "  };\n"
+                      + "  const imgDesc=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');\n"
+                      + "  Object.defineProperty(HTMLImageElement.prototype,'src',{\n"
+                      + "    set:function(url){\n"
+                      + "      if(url&&(url.includes(h)||(url.startsWith('/')&&!url.startsWith('//')))\n"
+                      + "         &&!url.startsWith('blob:')&&!url.startsWith('data:')){\n"
+                      + "        if(/[?&]_k=/.test(url)){ imgDesc.set.call(this,url); return; }\n"
+                      + "        const el=this;\n"
+                      + "        const full=url.startsWith('/')?'https://'+h+url:url;\n"
+                      + "        const prevBlob=el._cfBlob;\n"
+                      + "        window.fetch(full)\n"
+                      + "          .then(r=>r.blob())\n"
+                      + "          .then(b=>{\n"
+                      + "            const newBlob=URL.createObjectURL(b);\n"
+                      + "            imgDesc.set.call(el,newBlob);\n"
+                      + "            el._cfBlob=newBlob;\n"
+                      + "            const cleanup=()=>{\n"
+                      + "              if(prevBlob&&prevBlob!==newBlob){\n"
+                      + "                try{URL.revokeObjectURL(prevBlob);}catch(_){}\n"
+                      + "              }\n"
+                      + "            };\n"
+                      + "            el.addEventListener('load',cleanup,{once:true});\n"
+                      + "            el.addEventListener('error',cleanup,{once:true});\n"
+                      + "          })\n"
+                      + "          .catch(()=>{imgDesc.set.call(el,url);});\n"
+                      + "      } else { imgDesc.set.call(this,url); }\n"
+                      + "    },\n"
+                      + "    get:function(){return imgDesc.get.call(this);}\n"
+                      + "  });\n"
+                      + "  const setAttrOrig=Element.prototype.setAttribute;\n"
+                      + "  Element.prototype.setAttribute=function(name,value){\n"
+                      + "    if(this instanceof HTMLImageElement&&name&&name.toLowerCase()==='src'&&value){\n"
+                      + "      this.src=value;\n"
+                      + "      return;\n"
+                      + "    }\n"
+                      + "    return setAttrOrig.apply(this,arguments);\n"
+                      + "  };\n"
+                      + "})();";
+              }
+
+              private static String escape(String s) {
+                  if (s == null) return "";
+                  return s.replace("\\", "\\\\").replace("'", "\\'");
+              }
+          }
+          JAVA
+
+          cat > "$PKG_DIR/CFAccessWebViewClient.java" << 'JAVA'
+          package com.fiveohninelectric.field;
+
+          import android.net.Uri;
+          import android.webkit.CookieManager;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebView;
+          import com.getcapacitor.Bridge;
+          import com.getcapacitor.BridgeWebViewClient;
+          import com.getcapacitor.Logger;
+          import java.io.ByteArrayInputStream;
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.util.HashMap;
+          import java.util.List;
+          import java.util.Map;
+
+          /**
+           * Native Android equivalent of ios/App/App/CFViewController.swift: attaches
+           * the Cloudflare Access service-token headers to every GET request this
+           * WebView makes to automation.509electric.com, so the app never shows
+           * Cloudflare's login wall. Only GET is intercepted here — Android gives
+           * shouldInterceptRequest no access to a POST/PUT/DELETE body, so those are
+           * instead covered by CFAccessJsShim, added directly inside window.fetch
+           * before the request leaves JS (see MainActivity). shouldInterceptRequest
+           * runs off the UI thread for every resource, so the synchronous
+           * HttpURLConnection call below is safe.
+           */
+          public class CFAccessWebViewClient extends BridgeWebViewClient {
+
+              private static final String TAG = "CFAccessBridge";
+              private static final String CF_ID_HEADER = "CF-Access-Client-Id";
+              private static final String CF_SECRET_HEADER = "CF-Access-Client-Secret";
+
+              private final String cfClientId;
+              private final String cfClientSecret;
+              private final String gatedHost;
+              private final String reloadUrl;
+              private volatile boolean mainFrameRetried = false;
+
+              public CFAccessWebViewClient(Bridge bridge, String cfClientId, String cfClientSecret, String gatedHost, String reloadUrl) {
+                  super(bridge);
+                  this.cfClientId = cfClientId;
+                  this.cfClientSecret = cfClientSecret;
+                  this.gatedHost = gatedHost;
+                  this.reloadUrl = reloadUrl;
+              }
+
+              private boolean haveCredentials() {
+                  return cfClientId != null && !cfClientId.isEmpty() && !cfClientId.startsWith("CF_ID_PLACEHOLDER");
+              }
+
+              @Override
+              public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                  Uri uri = request.getUrl();
+                  String host = uri.getHost();
+                  String method = request.getMethod() == null ? "GET" : request.getMethod().toUpperCase();
+
+                  boolean isGatedHost = haveCredentials() && host != null && host.equalsIgnoreCase(gatedHost);
+                  boolean isGet = "GET".equals(method);
+                  boolean alreadyHasCfHeaders = request.getRequestHeaders() != null && hasHeaderIgnoreCase(request.getRequestHeaders(), CF_ID_HEADER);
+
+                  if (!isGatedHost || !isGet || alreadyHasCfHeaders) {
+                      return super.shouldInterceptRequest(view, request);
+                  }
+
+                  try {
+                      return fetchWithCfHeaders(uri, request);
+                  } catch (Exception e) {
+                      Logger.error(TAG, "CF-authenticated fetch failed for " + uri + " — falling back to default WebView handling", e);
+                      return super.shouldInterceptRequest(view, request);
+                  }
+              }
+
+              /**
+               * Belt-and-suspenders fallback: if the very first main-frame load raced
+               * Capacitor's own default WebViewClient (that call happens inside
+               * super.onCreate(), before MainActivity swaps in this client) and lost,
+               * Cloudflare Access responds with a 302 to a *.cloudflareaccess.com login
+               * page. WebView follows that redirect as a normal navigation, which DOES
+               * flow through shouldOverrideUrlLoading (unlike the app's own initial
+               * loadUrl call) — catch it here and force one clean reload with headers
+               * attached via the native loadUrl(url, extraHeaders) path.
+               */
+              @Override
+              public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                  Uri uri = request.getUrl();
+                  String host = uri.getHost();
+                  if (haveCredentials() && !mainFrameRetried && host != null && host.toLowerCase().contains("cloudflareaccess.com")) {
+                      mainFrameRetried = true;
+                      Logger.warn(TAG, "Redirected to Cloudflare Access login wall for " + gatedHost + " — reloading with CF headers attached natively.");
+                      Map<String, String> headers = new HashMap<>();
+                      headers.put(CF_ID_HEADER, cfClientId);
+                      headers.put(CF_SECRET_HEADER, cfClientSecret);
+                      view.post(() -> view.loadUrl(reloadUrl, headers));
+                      return true;
+                  }
+                  return super.shouldOverrideUrlLoading(view, request);
+              }
+
+              private WebResourceResponse fetchWithCfHeaders(Uri uri, WebResourceRequest request) throws IOException {
+                  HttpURLConnection conn = (HttpURLConnection) new URL(uri.toString()).openConnection();
+                  conn.setConnectTimeout(15000);
+                  conn.setReadTimeout(20000);
+                  conn.setInstanceFollowRedirects(true);
+                  conn.setRequestMethod("GET");
+                  conn.setRequestProperty(CF_ID_HEADER, cfClientId);
+                  conn.setRequestProperty(CF_SECRET_HEADER, cfClientSecret);
+
+                  Map<String, String> originalHeaders = request.getRequestHeaders();
+                  if (originalHeaders != null) {
+                      for (Map.Entry<String, String> h : originalHeaders.entrySet()) {
+                          if (!h.getKey().equalsIgnoreCase("Host")) {
+                              conn.setRequestProperty(h.getKey(), h.getValue());
+                          }
+                      }
+                  }
+                  String cookie = CookieManager.getInstance().getCookie(uri.toString());
+                  if (cookie != null && !cookie.isEmpty()) {
+                      conn.setRequestProperty("Cookie", cookie);
+                  }
+
+                  int status = conn.getResponseCode();
+                  String reason = conn.getResponseMessage();
+                  InputStream body = (status >= 400) ? conn.getErrorStream() : conn.getInputStream();
+                  if (body == null) {
+                      body = new ByteArrayInputStream(new byte[0]);
+                  }
+
+                  Map<String, String> responseHeaders = new HashMap<>();
+                  for (Map.Entry<String, List<String>> h : conn.getHeaderFields().entrySet()) {
+                      if (h.getKey() == null || h.getValue() == null || h.getValue().isEmpty()) continue;
+                      responseHeaders.put(h.getKey(), h.getValue().get(0));
+                  }
+
+                  String contentType = conn.getContentType();
+                  String mimeType = "application/octet-stream";
+                  String encoding = null;
+                  if (contentType != null) {
+                      String[] parts = contentType.split(";");
+                      mimeType = parts[0].trim();
+                      for (String p : parts) {
+                          String trimmed = p.trim();
+                          if (trimmed.toLowerCase().startsWith("charset=")) {
+                              encoding = trimmed.substring(8).trim();
+                          }
+                      }
+                  }
+
+                  return new WebResourceResponse(mimeType, encoding, status, (reason == null || reason.isEmpty()) ? "OK" : reason, responseHeaders, body);
+              }
+
+              private boolean hasHeaderIgnoreCase(Map<String, String> headers, String name) {
+                  for (String k : headers.keySet()) {
+                      if (k.equalsIgnoreCase(name)) return true;
+                  }
+                  return false;
+              }
+          }
+          JAVA
+
+          cat > "$PKG_DIR/MainActivity.java" << 'JAVA'
+          package com.fiveohninelectric.field;
+
+          import android.os.Bundle;
+          import androidx.webkit.WebViewCompat;
+          import androidx.webkit.WebViewFeature;
+          import com.getcapacitor.BridgeActivity;
+          import com.getcapacitor.Logger;
+          import java.util.Collections;
+
+          public class MainActivity extends BridgeActivity {
+
+              // NOTE: the marker constant below is deliberately built via string
+              // concatenation rather than written as one unbroken literal, and this
+              // comment deliberately avoids spelling that literal out too. The
+              // perl substitution step further down does an exact-text find/replace
+              // of that literal across this whole file — if this marker (or this
+              // comment) contained it unbroken, the substitution would rewrite it
+              // right along with the real constant below, permanently breaking the
+              // "did substitution actually happen" check (and, for the comment,
+              // leaking the real secret into a source comment for no reason).
+              private static final String CF_ID_UNSET_MARKER = "CF_ID" + "_PLACEHOLDER";
+              private static final String CF_CLIENT_ID = "CF_ID_PLACEHOLDER";
+              private static final String CF_CLIENT_SECRET = "CF_SEC_PLACEHOLDER";
+              private static final String CF_GATED_HOST = "automation.509electric.com";
+              private static final String CF_GATED_ORIGIN = "https://" + CF_GATED_HOST;
+              private static final String CF_APP_URL = CF_GATED_ORIGIN + "/app";
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  if (!haveCfCredentials()) {
+                      Logger.warn(
+                          "CFAccessBridge",
+                          "No Cloudflare Access credentials baked in — requests to " +
+                          CF_GATED_HOST +
+                          " will hit the CF login wall. Expected for a local `npx cap run android` build; " +
+                          "Codemagic injects real CF_CLIENT_ID/CF_CLIENT_SECRET values at build time."
+                      );
+                  }
+
+                  CFAccessWebViewClient cfClient = new CFAccessWebViewClient(bridge, CF_CLIENT_ID, CF_CLIENT_SECRET, CF_GATED_HOST, CF_APP_URL);
+                  bridge.setWebViewClient(cfClient);
+
+                  if (haveCfCredentials() && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                      String script = CFAccessJsShim.build(CF_CLIENT_ID, CF_CLIENT_SECRET, CF_GATED_HOST);
+                      WebViewCompat.addDocumentStartJavaScript(bridge.getWebView(), script, Collections.singleton(CF_GATED_ORIGIN));
+                  }
+              }
+
+              private boolean haveCfCredentials() {
+                  return CF_CLIENT_ID != null && !CF_CLIENT_ID.isEmpty() && !CF_CLIENT_ID.equals(CF_ID_UNSET_MARKER);
+              }
+          }
+          JAVA
+
+          # Substitute real credentials (same placeholder names/pattern as iOS).
+          # $ENV{...} is referenced (not string-interpolated) so this is safe
+          # regardless of what characters CF_CLIENT_ID/CF_CLIENT_SECRET contain —
+          # do NOT switch this to \Q...\E in the replacement side, that quotemeta's
+          # the literal value into the output instead of protecting the pattern.
+          perl -pi -e 's/CF_ID_PLACEHOLDER/$ENV{CF_CLIENT_ID}/g' "$PKG_DIR/MainActivity.java"
+          perl -pi -e 's/CF_SEC_PLACEHOLDER/$ENV{CF_CLIENT_SECRET}/g' "$PKG_DIR/MainActivity.java"
+          grep -q "CF_ID_PLACEHOLDER" "$PKG_DIR/MainActivity.java" && { echo "ERROR: CF credential substitution failed"; exit 1; }
+          echo "CF Access bridge injected."
+
+      - name: Sync Capacitor
+        script: npx cap sync android
+
+      - name: Build Android bundle (release AAB) + debug APK
+        script: |
+          set -euo pipefail
+          cd android
+          chmod +x ./gradlew
+          ./gradlew bundleRelease assembleDebug -PversionCode="${BUILD_NUMBER:-1}" -PversionName="1.0" --stacktrace
+
+    artifacts:
+      - android/app/build/outputs/**/*.aab
+      - android/app/build/outputs/**/*.apk

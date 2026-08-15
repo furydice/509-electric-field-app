@@ -6,9 +6,11 @@
     "sync": "npx cap sync",
     "ios:prepare": "bash scripts/prepare-ios-local.sh",
     "ios:open": "npx cap open ios",
-    "ios:sim": "bash scripts/ios-simulator-smoke.sh"
+    "ios:sim": "bash scripts/ios-simulator-smoke.sh",
+    "android:open": "npx cap open android"
   },
   "dependencies": {
+    "@capacitor/android": "^6.2.1",
     "@capacitor/app": "^6.0.0",
     "@capacitor/core": "^6.0.0",
     "@capacitor/ios": "^6.0.0",
