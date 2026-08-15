@@ -127,6 +127,66 @@ class CFViewController: CAPBridgeViewController, WKNavigationDelegate {
     r.setValue(cfSec,forHTTPHeaderField:"CF-Access-Client-Secret")
     webView.load(r)
   }
+
+  // --- Backend availability ------------------------------------------
+  // The WebView loads Mission Control remotely, so when the origin is down
+  // Cloudflare returns its own "Bad gateway" page and WKWebView renders it as
+  // though it were the app. Apple rejected 1.0 (42) under Guideline 2.1(a) for
+  // exactly that. Show our own screen instead.
+  // NOTE: keep this in sync with the copy in codemagic.yaml.
+
+  func webView(_ webView:WKWebView,decidePolicyFor response:WKNavigationResponse,
+               decisionHandler:@escaping(WKNavigationResponsePolicy)->Void){
+    guard response.isForMainFrame else { decisionHandler(.allow); return }
+    if let http = response.response as? HTTPURLResponse, http.statusCode >= 500 {
+      decisionHandler(.cancel)
+      showConnectionError("Can't reach 509 Electric",
+                          detail:"The server is temporarily unavailable (error \(http.statusCode)).")
+      return
+    }
+    if response.response.url?.host?.contains("cloudflareaccess.com") == true {
+      decisionHandler(.cancel)
+      showConnectionError("Can't sign in to 509 Electric",
+                          detail:"This app's access credentials were not accepted.")
+      return
+    }
+    decisionHandler(.allow)
+  }
+
+  func webView(_ webView:WKWebView,didFailProvisionalNavigation navigation:WKNavigation!,
+               withError error:Error){
+    // decidePolicyFor(navigationAction) cancels and re-issues requests with CF
+    // headers. That arrives here as NSURLErrorCancelled on every normal page
+    // load and must NOT be treated as a failure.
+    if (error as NSError).code == NSURLErrorCancelled { return }
+    showConnectionError("Can't reach 509 Electric",
+                        detail:error.localizedDescription)
+  }
+
+  private func showConnectionError(_ title:String, detail:String){
+    let html = """
+    <!DOCTYPE html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <style>
+      :root{color-scheme:dark}
+      body{margin:0;background:#0f172a;color:#e2e8f0;
+        font-family:-apple-system,system-ui,sans-serif;font-size:16px;
+        display:flex;align-items:center;justify-content:center;
+        min-height:100vh;padding:24px;text-align:center;-webkit-user-select:none}
+      .box{max-width:22rem}
+      h1{font-size:1.25rem;font-weight:600;margin:0 0 .75rem}
+      p{margin:0 0 1.5rem;color:#94a3b8;line-height:1.5;font-size:.95rem}
+      button{background:#f97316;color:#0f172a;border:0;border-radius:10px;
+        padding:.85rem 2rem;font-size:1rem;font-weight:600}
+      button:active{opacity:.7}
+    </style></head><body><div class="box">
+      <h1>\(title)</h1>
+      <p>\(detail)<br>Nothing has been lost. Try again in a moment.</p>
+      <button onclick="location.href='https://automation.509electric.com/app'">Try Again</button>
+    </div></body></html>
+    """
+    webView?.loadHTMLString(html, baseURL: URL(string:"https://automation.509electric.com/"))
+  }
 }
 SWIFT
 
