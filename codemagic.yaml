@@ -278,7 +278,7 @@ workflows:
       groups:
         - CF_Access
       android_signing:
-        - field_app_upload_keystore
+        - field_upload_keystore
       java: 17
       node: 20.11.0
     scripts:
@@ -355,7 +355,7 @@ workflows:
               }
               signingConfigs {
                   release {
-                      // Populated by the android_signing: field_app_upload_keystore
+                      // Populated by the android_signing: field_upload_keystore
                       // integration above, which decodes the uploaded keystore and
                       // exports these env vars. Guarded so a plain local ./gradlew
                       // build without them still succeeds unsigned.
