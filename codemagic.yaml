@@ -721,6 +721,34 @@ workflows:
           grep -q "CF_ID_PLACEHOLDER" "$PKG_DIR/MainActivity.java" && { echo "ERROR: CF credential substitution failed"; exit 1; }
           echo "CF Access bridge injected."
 
+      - name: Verify CF Access credentials are live (same headers the app injects)
+        script: |
+          set -euo pipefail
+          # This doesn't exercise the native Android WebViewClient/JS shim itself —
+          # that needs an on-device or emulator run (see IOS_SIMULATOR.md-equivalent
+          # follow-up for Android). What it DOES prove: the exact CF-Access-Client-Id
+          # / CF-Access-Client-Secret values this build just baked into
+          # MainActivity.java are current and Cloudflare Access accepts them —
+          # i.e. if the native bridge is attaching these headers correctly, there is
+          # nothing else standing between the app and a real login. Catches the
+          # "credentials rotated/expired" failure mode independently of any Android
+          # runtime bug.
+          STATUS=$(curl -s -D /tmp/cf_check_headers.txt -o /tmp/cf_check_body.html -w '%{http_code}' \
+            -H "CF-Access-Client-Id: $CF_CLIENT_ID" \
+            -H "CF-Access-Client-Secret: $CF_CLIENT_SECRET" \
+            https://automation.509electric.com/api/health)
+          echo "HTTP status from automation.509electric.com: $STATUS"
+          if grep -qi "cloudflareaccess.com" /tmp/cf_check_headers.txt /tmp/cf_check_body.html 2>/dev/null; then
+            echo "ERROR: response references cloudflareaccess.com — Cloudflare Access rejected"
+            echo "these headers and served its login wall instead of reaching the origin."
+            echo "--- response headers ---"
+            cat /tmp/cf_check_headers.txt
+            echo "--- response body (first 2KB) ---"
+            head -c 2000 /tmp/cf_check_body.html
+            exit 1
+          fi
+          echo "No Cloudflare Access login-wall markers in the response — these credentials reach the origin."
+
       - name: Sync Capacitor
         script: npx cap sync android
 
