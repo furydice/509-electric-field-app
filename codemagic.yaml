@@ -285,6 +285,9 @@ workflows:
       - name: Install dependencies
         script: npm install
 
+      - name: Verify Android release configuration
+        script: npm test
+
       - name: Add Android platform (first run only)
         script: |
           if [ ! -d "android" ]; then
@@ -310,16 +313,16 @@ workflows:
           grep -q "android.permission.CAMERA" "$MANIFEST" || { echo "ERROR: AndroidManifest.xml patch failed"; exit 1; }
           cat "$MANIFEST"
 
-      - name: Set compile/target SDK to 35 and wire release signing
+      - name: Set compile/target SDK to 36 and wire release signing
         script: |
           set -euo pipefail
-          # Google Play requires new apps/updates to target API 35 (Android 15) as of
-          # Aug 2025, moving to API 36 on Aug 31 2026 — revisit before then.
+          # Google Play requires new apps and updates to target API 36 (Android 16)
+          # beginning Aug 31 2026.
           cat > android/variables.gradle << 'GRADLE'
           ext {
               minSdkVersion = 22
-              compileSdkVersion = 35
-              targetSdkVersion = 35
+              compileSdkVersion = 36
+              targetSdkVersion = 36
               androidxActivityVersion = '1.8.0'
               androidxAppCompatVersion = '1.6.1'
               androidxCoordinatorLayoutVersion = '1.2.0'
