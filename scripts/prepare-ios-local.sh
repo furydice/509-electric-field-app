@@ -57,16 +57,33 @@ class CFViewController: CAPBridgeViewController, WKNavigationDelegate {
     if #available(iOS 16.4, *) {
       webView?.isInspectable = true
     }
-    let js = """
+    let js = #"""
     (function(){
-      const id='\(self.cfId)',sec='\(self.cfSec)',h='automation.509electric.com';
+      const id='\#(self.cfId)',sec='\#(self.cfSec)',h='automation.509electric.com';
+
+      // Resolve exactly as browser fetch does; never match host text in a path/query.
+      function gatedURL(value){
+        if(typeof value!=='string'||!value||/[\u0000-\u0020\u007f\\]/.test(value)
+           ||/%(?![0-9a-f]{2})/i.test(value)) return null;
+        if(/^[a-z][a-z0-9+.-]*:/i.test(value)&&!/^https:\/\//i.test(value)) return null;
+        const authority=value.match(/^(?:[a-z][a-z0-9+.-]*:)?\/\/([^/?#]*)/i);
+        if(authority&&authority[1].includes('@')) return null;
+        try{
+          const url=new URL(value,document.baseURI);
+          return url.origin==='https://automation.509electric.com'&&!url.username&&!url.password?url:null;
+        }catch(_){ return null; }
+      }
 
       const orig=window.fetch.bind(window);
       window.fetch=function(i,o){
-        let u=typeof i==='string'?i:(i&&i.url)||'';
-        if(u.includes(h)||u.startsWith('/')){
-          o=o||{};o.headers=Object.assign({},o.headers||{},
-          {'CF-Access-Client-Id':id,'CF-Access-Client-Secret':sec});
+        const u=typeof i==='string'?i:(i instanceof URL?i.href:(i&&i.url)||'');
+        if(gatedURL(u)){
+          const headers=new Headers(o&&o.headers!==undefined?o.headers:(i&&i.headers));
+          headers.set('CF-Access-Client-Id',id);
+          headers.set('CF-Access-Client-Secret',sec);
+          const redirect=o&&o.redirect!==undefined?o.redirect:(i&&i.redirect);
+          // Fetch cannot inspect a redirect target before forwarding custom headers.
+          o={...o,headers:Object.fromEntries(headers),redirect:redirect==='manual'?'manual':'error'};
         }
         return orig(i,o);
       };
@@ -74,11 +91,11 @@ class CFViewController: CAPBridgeViewController, WKNavigationDelegate {
       const imgDesc=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');
       Object.defineProperty(HTMLImageElement.prototype,'src',{
         set:function(url){
-          if(url&&(url.includes(h)||(url.startsWith('/')&&!url.startsWith('//')))
-             &&!url.startsWith('blob:')&&!url.startsWith('data:')){
+          const gated=gatedURL(url);
+          if(gated){
             if(/[?&]_k=/.test(url)){ imgDesc.set.call(this,url); return; }
             const el=this;
-            const full=url.startsWith('/')?'https://'+h+url:url;
+            const full=gated.href;
             const prevBlob=el._cfBlob;
             window.fetch(full)
               .then(r=>r.blob())
@@ -109,20 +126,28 @@ class CFViewController: CAPBridgeViewController, WKNavigationDelegate {
         return setAttrOrig.apply(this,arguments);
       };
     })();
-    """
+    """#
     let s=WKUserScript(source:js,injectionTime:.atDocumentStart,forMainFrameOnly:false)
     webView?.configuration.userContentController.addUserScript(s)
+  }
+
+  private func isGatedOrigin(_ url:URL)->Bool {
+    guard let parts=URLComponents(url:url,resolvingAgainstBaseURL:false) else { return false }
+    return parts.scheme?.lowercased()=="https"
+      && parts.host?.lowercased()=="automation.509electric.com"
+      && parts.user==nil && parts.password==nil
+      && (parts.port==nil || parts.port==443)
   }
 
   func webView(_ webView:WKWebView,decidePolicyFor action:WKNavigationAction,
                decisionHandler:@escaping(WKNavigationActionPolicy)->Void){
     if action.navigationType == .backForward { decisionHandler(.allow); return }
     guard let url=action.request.url,
-          url.host?.contains("509electric.com")==true,
+          isGatedOrigin(url),
           action.request.value(forHTTPHeaderField:"CF-Access-Client-Id")==nil
     else { decisionHandler(.allow); return }
     decisionHandler(.cancel)
-    var r=URLRequest(url:url)
+    var r=action.request
     r.setValue(cfId,forHTTPHeaderField:"CF-Access-Client-Id")
     r.setValue(cfSec,forHTTPHeaderField:"CF-Access-Client-Secret")
     webView.load(r)

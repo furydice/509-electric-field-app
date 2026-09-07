@@ -80,41 +80,49 @@ workflows:
             override func viewDidLoad() {
               super.viewDidLoad()
               webView?.navigationDelegate = self
-              // Disable iOS back-swipe gesture — this is a native app, not a browser.
-              // Without this, the edge-swipe triggers decidePolicyFor which reloads the page.
               webView?.allowsBackForwardNavigationGestures = false
-              // Enable Safari Web Inspector / Inspect.dev for this WebView (iOS 16.4+).
-              // Required for remote debugging from a Mac (Safari) or Windows (Inspect.dev) over USB.
               if #available(iOS 16.4, *) {
                 webView?.isInspectable = true
               }
-              let js = """
+              let js = #"""
               (function(){
-                const id='\(self.cfId)',sec='\(self.cfSec)',h='automation.509electric.com';
+                const id='\#(self.cfId)',sec='\#(self.cfSec)',h='automation.509electric.com';
 
-                // Override fetch to add CF headers
+                // Resolve exactly as browser fetch does; never match host text in a path/query.
+                function gatedURL(value){
+                  if(typeof value!=='string'||!value||/[\u0000-\u0020\u007f\\]/.test(value)
+                     ||/%(?![0-9a-f]{2})/i.test(value)) return null;
+                  if(/^[a-z][a-z0-9+.-]*:/i.test(value)&&!/^https:\/\//i.test(value)) return null;
+                  const authority=value.match(/^(?:[a-z][a-z0-9+.-]*:)?\/\/([^/?#]*)/i);
+                  if(authority&&authority[1].includes('@')) return null;
+                  try{
+                    const url=new URL(value,document.baseURI);
+                    return url.origin==='https://automation.509electric.com'&&!url.username&&!url.password?url:null;
+                  }catch(_){ return null; }
+                }
+
                 const orig=window.fetch.bind(window);
                 window.fetch=function(i,o){
-                  let u=typeof i==='string'?i:(i&&i.url)||'';
-                  if(u.includes(h)||u.startsWith('/')){
-                    o=o||{};o.headers=Object.assign({},o.headers||{},
-                    {'CF-Access-Client-Id':id,'CF-Access-Client-Secret':sec});
+                  const u=typeof i==='string'?i:(i instanceof URL?i.href:(i&&i.url)||'');
+                  if(gatedURL(u)){
+                    const headers=new Headers(o&&o.headers!==undefined?o.headers:(i&&i.headers));
+                    headers.set('CF-Access-Client-Id',id);
+                    headers.set('CF-Access-Client-Secret',sec);
+                    const redirect=o&&o.redirect!==undefined?o.redirect:(i&&i.redirect);
+                    // Fetch cannot inspect a redirect target before forwarding custom headers.
+                    o={...o,headers:Object.fromEntries(headers),redirect:redirect==='manual'?'manual':'error'};
                   }
                   return orig(i,o);
                 };
 
-                // Override img.src to load via fetch (adds CF headers to image requests)
                 const imgDesc=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');
                 Object.defineProperty(HTMLImageElement.prototype,'src',{
                   set:function(url){
-                    if(url&&(url.includes(h)||(url.startsWith('/')&&!url.startsWith('//')))
-                       &&!url.startsWith('blob:')&&!url.startsWith('data:')){
-                      // If the URL already carries ?_k= (API key), the server doesn't
-                      // require CF headers — skip the fetch shim so loading="lazy" works
-                      // and we don't leak blob URLs.
+                    const gated=gatedURL(url);
+                    if(gated){
                       if(/[?&]_k=/.test(url)){ imgDesc.set.call(this,url); return; }
                       const el=this;
-                      const full=url.startsWith('/')?'https://'+h+url:url;
+                      const full=gated.href;
                       const prevBlob=el._cfBlob;
                       window.fetch(full)
                         .then(r=>r.blob())
@@ -136,8 +144,6 @@ workflows:
                   get:function(){return imgDesc.get.call(this);}
                 });
 
-                // Also wrap setAttribute so img.setAttribute('src', url) and innerHTML-built
-                // <img> tags route through the property setter above (and thus the fetch shim).
                 const setAttrOrig=Element.prototype.setAttribute;
                 Element.prototype.setAttribute=function(name,value){
                   if(this instanceof HTMLImageElement&&name&&name.toLowerCase()==='src'&&value){
@@ -147,22 +153,28 @@ workflows:
                   return setAttrOrig.apply(this,arguments);
                 };
               })();
-              """
+              """#
               let s=WKUserScript(source:js,injectionTime:.atDocumentStart,forMainFrameOnly:false)
               webView?.configuration.userContentController.addUserScript(s)
             }
 
+            private func isGatedOrigin(_ url:URL)->Bool {
+              guard let parts=URLComponents(url:url,resolvingAgainstBaseURL:false) else { return false }
+              return parts.scheme?.lowercased()=="https"
+                && parts.host?.lowercased()=="automation.509electric.com"
+                && parts.user==nil && parts.password==nil
+                && (parts.port==nil || parts.port==443)
+            }
+
             func webView(_ webView:WKWebView,decidePolicyFor action:WKNavigationAction,
                          decisionHandler:@escaping(WKNavigationActionPolicy)->Void){
-              // Back-forward navigations load from WKWebView's internal history cache —
-              // they don't need CF headers and should never trigger a page reload.
               if action.navigationType == .backForward { decisionHandler(.allow); return }
               guard let url=action.request.url,
-                    url.host?.contains("509electric.com")==true,
+                    isGatedOrigin(url),
                     action.request.value(forHTTPHeaderField:"CF-Access-Client-Id")==nil
               else { decisionHandler(.allow); return }
               decisionHandler(.cancel)
-              var r=URLRequest(url:url)
+              var r=action.request
               r.setValue(cfId,forHTTPHeaderField:"CF-Access-Client-Id")
               r.setValue(cfSec,forHTTPHeaderField:"CF-Access-Client-Secret")
               webView.load(r)
@@ -438,23 +450,42 @@ workflows:
               static String build(String clientId, String clientSecret, String gatedHost) {
                   return "(function(){\n"
                       + "  const id='" + escape(clientId) + "',sec='" + escape(clientSecret) + "',h='" + escape(gatedHost) + "';\n"
+                      + "\n"
+                      + "  // Resolve exactly as browser fetch does; never match host text in a path/query.\n"
+                      + "  function gatedURL(value){\n"
+                      + "    if(typeof value!=='string'||!value||/[\\u0000-\\u0020\\u007f\\\\]/.test(value)\n"
+                      + "       ||/%(?![0-9a-f]{2})/i.test(value)) return null;\n"
+                      + "    if(/^[a-z][a-z0-9+.-]*:/i.test(value)&&!/^https:\\/\\//i.test(value)) return null;\n"
+                      + "    const authority=value.match(/^(?:[a-z][a-z0-9+.-]*:)?\\/\\/([^/?#]*)/i);\n"
+                      + "    if(authority&&authority[1].includes('@')) return null;\n"
+                      + "    try{\n"
+                      + "      const url=new URL(value,document.baseURI);\n"
+                      + "      return url.origin==='https://automation.509electric.com'&&!url.username&&!url.password?url:null;\n"
+                      + "    }catch(_){ return null; }\n"
+                      + "  }\n"
+                      + "\n"
                       + "  const orig=window.fetch.bind(window);\n"
                       + "  window.fetch=function(i,o){\n"
-                      + "    let u=typeof i==='string'?i:(i&&i.url)||'';\n"
-                      + "    if(u.includes(h)||u.startsWith('/')){\n"
-                      + "      o=o||{};o.headers=Object.assign({},o.headers||{},\n"
-                      + "      {'CF-Access-Client-Id':id,'CF-Access-Client-Secret':sec});\n"
+                      + "    const u=typeof i==='string'?i:(i instanceof URL?i.href:(i&&i.url)||'');\n"
+                      + "    if(gatedURL(u)){\n"
+                      + "      const headers=new Headers(o&&o.headers!==undefined?o.headers:(i&&i.headers));\n"
+                      + "      headers.set('CF-Access-Client-Id',id);\n"
+                      + "      headers.set('CF-Access-Client-Secret',sec);\n"
+                      + "      const redirect=o&&o.redirect!==undefined?o.redirect:(i&&i.redirect);\n"
+                      + "      // Fetch cannot inspect a redirect target before forwarding custom headers.\n"
+                      + "      o={...o,headers:Object.fromEntries(headers),redirect:redirect==='manual'?'manual':'error'};\n"
                       + "    }\n"
                       + "    return orig(i,o);\n"
                       + "  };\n"
+                      + "\n"
                       + "  const imgDesc=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');\n"
                       + "  Object.defineProperty(HTMLImageElement.prototype,'src',{\n"
                       + "    set:function(url){\n"
-                      + "      if(url&&(url.includes(h)||(url.startsWith('/')&&!url.startsWith('//')))\n"
-                      + "         &&!url.startsWith('blob:')&&!url.startsWith('data:')){\n"
+                      + "      const gated=gatedURL(url);\n"
+                      + "      if(gated){\n"
                       + "        if(/[?&]_k=/.test(url)){ imgDesc.set.call(this,url); return; }\n"
                       + "        const el=this;\n"
-                      + "        const full=url.startsWith('/')?'https://'+h+url:url;\n"
+                      + "        const full=gated.href;\n"
                       + "        const prevBlob=el._cfBlob;\n"
                       + "        window.fetch(full)\n"
                       + "          .then(r=>r.blob())\n"
@@ -475,6 +506,7 @@ workflows:
                       + "    },\n"
                       + "    get:function(){return imgDesc.get.call(this);}\n"
                       + "  });\n"
+                      + "\n"
                       + "  const setAttrOrig=Element.prototype.setAttribute;\n"
                       + "  Element.prototype.setAttribute=function(name,value){\n"
                       + "    if(this instanceof HTMLImageElement&&name&&name.toLowerCase()==='src'&&value){\n"
@@ -509,6 +541,8 @@ workflows:
           import java.io.InputStream;
           import java.net.HttpURLConnection;
           import java.net.URL;
+          import java.net.URI;
+          import java.net.URISyntaxException;
           import java.util.HashMap;
           import java.util.List;
           import java.util.Map;
@@ -548,13 +582,37 @@ workflows:
                   return cfClientId != null && !cfClientId.isEmpty() && !cfClientId.startsWith("CF_ID_PLACEHOLDER");
               }
 
+              private boolean isGatedOrigin(Uri uri) {
+                  if (uri == null) return false;
+                  try {
+                      URI parsed = new URI(uri.toString());
+                      return "https".equalsIgnoreCase(parsed.getScheme())
+                          && "automation.509electric.com".equalsIgnoreCase(parsed.getHost())
+                          && parsed.getRawUserInfo() == null
+                          && (parsed.getPort() == -1 || parsed.getPort() == 443);
+                  } catch (URISyntaxException e) { return false; }
+              }
+
+              private boolean isAccessLogin(Uri uri) {
+                  if (uri == null) return false;
+                  try {
+                      URI parsed = new URI(uri.toString());
+                      String host = parsed.getHost();
+                      return "https".equalsIgnoreCase(parsed.getScheme()) && host != null
+                          && ("cloudflareaccess.com".equalsIgnoreCase(host)
+                              || host.toLowerCase(java.util.Locale.ROOT).endsWith(".cloudflareaccess.com"))
+                          && parsed.getRawUserInfo() == null
+                          && (parsed.getPort() == -1 || parsed.getPort() == 443);
+                  } catch (URISyntaxException e) { return false; }
+              }
+
               @Override
               public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                   Uri uri = request.getUrl();
                   String host = uri.getHost();
                   String method = request.getMethod() == null ? "GET" : request.getMethod().toUpperCase();
 
-                  boolean isGatedHost = haveCredentials() && host != null && host.equalsIgnoreCase(gatedHost);
+                  boolean isGatedHost = haveCredentials() && isGatedOrigin(uri);
                   boolean isGet = "GET".equals(method);
                   boolean alreadyHasCfHeaders = request.getRequestHeaders() != null && hasHeaderIgnoreCase(request.getRequestHeaders(), CF_ID_HEADER);
 
@@ -565,8 +623,9 @@ workflows:
                   try {
                       return fetchWithCfHeaders(uri, request);
                   } catch (Exception e) {
-                      Logger.error(TAG, "CF-authenticated fetch failed for " + uri + " — falling back to default WebView handling", e);
-                      return super.shouldInterceptRequest(view, request);
+                      Logger.error(TAG, "Protected request failed; no credentialed redirect fallback", null);
+                      return new WebResourceResponse("text/plain", "UTF-8", 502, "Bad Gateway", new HashMap<>(),
+                          new ByteArrayInputStream("Protected request unavailable".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
                   }
               }
 
@@ -584,7 +643,8 @@ workflows:
               public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                   Uri uri = request.getUrl();
                   String host = uri.getHost();
-                  if (haveCredentials() && !mainFrameRetried && host != null && host.toLowerCase().contains("cloudflareaccess.com")) {
+                  if (haveCredentials() && !mainFrameRetried && request.isForMainFrame()
+                      && isAccessLogin(uri) && isGatedOrigin(Uri.parse(reloadUrl))) {
                       mainFrameRetried = true;
                       Logger.warn(TAG, "Redirected to Cloudflare Access login wall for " + gatedHost + " — reloading with CF headers attached natively.");
                       Map<String, String> headers = new HashMap<>();
@@ -597,28 +657,48 @@ workflows:
               }
 
               private WebResourceResponse fetchWithCfHeaders(Uri uri, WebResourceRequest request) throws IOException {
-                  HttpURLConnection conn = (HttpURLConnection) new URL(uri.toString()).openConnection();
-                  conn.setConnectTimeout(15000);
-                  conn.setReadTimeout(20000);
-                  conn.setInstanceFollowRedirects(true);
-                  conn.setRequestMethod("GET");
-                  conn.setRequestProperty(CF_ID_HEADER, cfClientId);
-                  conn.setRequestProperty(CF_SECRET_HEADER, cfClientSecret);
-
-                  Map<String, String> originalHeaders = request.getRequestHeaders();
-                  if (originalHeaders != null) {
-                      for (Map.Entry<String, String> h : originalHeaders.entrySet()) {
-                          if (!h.getKey().equalsIgnoreCase("Host")) {
-                              conn.setRequestProperty(h.getKey(), h.getValue());
+                  HttpURLConnection conn;
+                  int status;
+                  int redirects = 0;
+                  while (true) {
+                      if (!isGatedOrigin(uri)) throw new IOException("Protected origin rejected");
+                      conn = (HttpURLConnection) new URL(uri.toString()).openConnection();
+                      conn.setConnectTimeout(15000);
+                      conn.setReadTimeout(20000);
+                      conn.setInstanceFollowRedirects(false);
+                      conn.setRequestMethod("GET");
+                      Map<String, String> originalHeaders = request.getRequestHeaders();
+                      if (originalHeaders != null) {
+                          for (Map.Entry<String, String> h : originalHeaders.entrySet()) {
+                              if (!h.getKey().equalsIgnoreCase("Host")
+                                  && !h.getKey().equalsIgnoreCase(CF_ID_HEADER)
+                                  && !h.getKey().equalsIgnoreCase(CF_SECRET_HEADER)) {
+                                  conn.setRequestProperty(h.getKey(), h.getValue());
+                              }
                           }
                       }
-                  }
-                  String cookie = CookieManager.getInstance().getCookie(uri.toString());
-                  if (cookie != null && !cookie.isEmpty()) {
-                      conn.setRequestProperty("Cookie", cookie);
-                  }
+                      // Set the native pair after ordinary caller headers, case-insensitively.
+                      conn.setRequestProperty(CF_ID_HEADER, cfClientId);
+                      conn.setRequestProperty(CF_SECRET_HEADER, cfClientSecret);
+                      String cookie = CookieManager.getInstance().getCookie(uri.toString());
+                      if (cookie != null && !cookie.isEmpty()) {
+                          conn.setRequestProperty("Cookie", cookie);
+                      }
 
-                  int status = conn.getResponseCode();
+                      status = conn.getResponseCode();
+                      if (status >= 300 && status < 400) {
+                          String location = conn.getHeaderField("Location");
+                          conn.disconnect();
+                          if (location == null || ++redirects > 5) throw new IOException("Protected redirect unavailable");
+                          try {
+                              URI next = new URI(uri.toString()).resolve(new URI(location));
+                              uri = Uri.parse(next.toString());
+                          } catch (URISyntaxException e) { throw new IOException("Malformed protected redirect"); }
+                          if (!isGatedOrigin(uri)) throw new IOException("Cross-origin protected redirect rejected");
+                          continue;
+                      }
+                      break;
+                  }
                   String reason = conn.getResponseMessage();
                   InputStream body = (status >= 400) ? conn.getErrorStream() : conn.getInputStream();
                   if (body == null) {

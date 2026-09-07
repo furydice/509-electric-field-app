@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "description": "509 Electric Field App",
   "scripts": {
-    "test": "npm run test:android-workflow",
+    "test": "npm run test:android-workflow && npm run test:native-origin",
     "sync": "npx cap sync",
     "test:android-workflow": "node --test scripts/android-workflow.test.mjs",
+    "test:native-origin": "node --test scripts/native-origin.test.mjs",
     "ios:prepare": "bash scripts/prepare-ios-local.sh",
     "ios:open": "npx cap open ios",
     "ios:sim": "bash scripts/ios-simulator-smoke.sh",
