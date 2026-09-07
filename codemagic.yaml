@@ -425,6 +425,16 @@ workflows:
           }
           GRADLE
 
+      - name: Validate CF Access build settings
+        script: |
+          set +x
+          set -euo pipefail
+          if [[ -z "${CF_CLIENT_ID:-}" || -z "${CF_CLIENT_SECRET:-}" ]]; then
+            echo "ERROR: CF Access build settings CF_CLIENT_ID and CF_CLIENT_SECRET are required."
+            exit 1
+          fi
+          echo "CF Access build settings are present; credential validity has not been probed."
+
       - name: Inject CF Access bridge (native WebViewClient + JS shim)
         script: |
           set -euo pipefail
@@ -804,33 +814,50 @@ workflows:
           grep -q "CF_ID_PLACEHOLDER" "$PKG_DIR/MainActivity.java" && { echo "ERROR: CF credential substitution failed"; exit 1; }
           echo "CF Access bridge injected."
 
-      - name: Verify CF Access credentials are live (same headers the app injects)
+      - name: Optional live MC reachability probe
         script: |
+          set +x
           set -euo pipefail
-          # This doesn't exercise the native Android WebViewClient/JS shim itself —
-          # that needs an on-device or emulator run (see IOS_SIMULATOR.md-equivalent
-          # follow-up for Android). What it DOES prove: the exact CF-Access-Client-Id
-          # / CF-Access-Client-Secret values this build just baked into
-          # MainActivity.java are current and Cloudflare Access accepts them —
-          # i.e. if the native bridge is attaching these headers correctly, there is
-          # nothing else standing between the app and a real login. Catches the
-          # "credentials rotated/expired" failure mode independently of any Android
-          # runtime bug.
-          STATUS=$(curl -s -D /tmp/cf_check_headers.txt -o /tmp/cf_check_body.html -w '%{http_code}' \
-            -H "CF-Access-Client-Id: $CF_CLIENT_ID" \
-            -H "CF-Access-Client-Secret: $CF_CLIENT_SECRET" \
-            https://automation.509electric.com/api/health)
-          echo "HTTP status from automation.509electric.com: $STATUS"
-          if grep -qi "cloudflareaccess.com" /tmp/cf_check_headers.txt /tmp/cf_check_body.html 2>/dev/null; then
-            echo "ERROR: response references cloudflareaccess.com — Cloudflare Access rejected"
-            echo "these headers and served its login wall instead of reaching the origin."
-            echo "--- response headers ---"
-            cat /tmp/cf_check_headers.txt
-            echo "--- response body (first 2KB) ---"
-            head -c 2000 /tmp/cf_check_body.html
+          case "${MC_HEALTH_PROBE:-0}" in
+            0|"") echo "Live MC reachability probe skipped (compile-only default; MC_HEALTH_PROBE=1 opts in)."; exit 0 ;;
+            1) ;;
+            *) echo "ERROR: MC_HEALTH_PROBE must be 0 or 1."; exit 1 ;;
+          esac
+          if [[ -z "${CF_CLIENT_ID:-}" || -z "${CF_CLIENT_SECRET:-}" ]]; then
+            echo "ERROR: CF Access settings are required for the opted-in live probe."
             exit 1
           fi
-          echo "No Cloudflare Access login-wall markers in the response — these credentials reach the origin."
+          # Never print response headers/body or curl diagnostics; they may carry
+          # authentication state. The temporary response is private and removed.
+          BODY_FILE=$(mktemp)
+          trap 'rm -f "$BODY_FILE"' EXIT
+          if ! STATUS=$(curl --silent --connect-timeout 10 --max-time 20 --max-filesize 65536 \
+            --proto '=https' --request GET --output "$BODY_FILE" --write-out '%{http_code}' \
+            --header "CF-Access-Client-Id: $CF_CLIENT_ID" \
+            --header "CF-Access-Client-Secret: $CF_CLIENT_SECRET" \
+            https://automation.509electric.com/api/ping 2>/dev/null); then
+            echo "ERROR: Live MC reachability probe transport failed."
+            exit 1
+          fi
+          if [[ "$STATUS" != "200" ]]; then
+            if [[ "$STATUS" =~ ^[0-9]{3}$ ]]; then
+              echo "ERROR: Live MC reachability probe returned HTTP $STATUS; expected 200."
+            else
+              echo "ERROR: Live MC reachability probe returned an invalid HTTP status."
+            fi
+            exit 1
+          fi
+          node - "$BODY_FILE" <<'NODE'
+          const fs = require('node:fs');
+          try {
+            const value = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+            if (!value || Array.isArray(value) || value.ok !== true || !Number.isSafeInteger(value.t) || value.t <= 0 || !Number.isFinite(value.uptime) || value.uptime < 0) throw new Error('shape');
+          } catch {
+            console.error('ERROR: Live MC reachability probe did not return the expected MC ping payload.');
+            process.exit(1);
+          }
+          console.log('Live MC reachability probe passed (HTTP 200 and expected MC ping payload); named authentication, CF credential validity and native app behavior are not verified.');
+          NODE
 
       - name: Sync Capacitor
         script: npx cap sync android
