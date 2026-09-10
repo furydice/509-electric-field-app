@@ -114,7 +114,7 @@ function runScript(script, f, variables = {}) {
     'set -eu',
     "export PATH='" + prefix + ":/usr/bin:/bin:" + nodePrefix + "'",
     'resolved="$(command -v curl || true)"',
-    "if [ \"$resolved\" != '" + expectedCurl + "' ]; then echo 'fixture curl was not resolved first'; exit 97; fi",
+    "if [ \"$resolved\" != '" + expectedCurl + "' ]; then printf 'fixture curl was not resolved first (resolved=%s expected=%s)\\n' \"$resolved\" '" + expectedCurl + "'; exit 97; fi",
     "source '" + posixPath(scriptPath) + "'",
     '',
   ].join('\n');
@@ -125,8 +125,6 @@ function runScript(script, f, variables = {}) {
     env: {
       SystemRoot: process.env.SystemRoot || '',
       WINDIR: process.env.WINDIR || '',
-      TMP: prefix,
-      TEMP: prefix,
       PATH: prefix + ':/usr/bin:/bin:' + nodePrefix,
       FAKE_CURL_MARKER: posixPath(f.marker),
       FAKE_CURL_ARGS_FILE: posixPath(f.args),

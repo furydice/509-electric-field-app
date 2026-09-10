@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "description": "509 Electric Field App",
   "scripts": {
-    "test": "npm run test:android-workflow && npm run test:native-origin && npm run test:android-health-probe",
+    "test": "npm run test:android-workflow && npm run test:native-origin && npm run test:android-health-probe && npm run test:android-release-candidate",
     "sync": "npx cap sync",
     "test:android-workflow": "node --test scripts/android-workflow.test.mjs",
     "test:native-origin": "node --test scripts/native-origin.test.mjs",
     "test:android-health-probe": "node --test scripts/android-health-probe.test.mjs",
+    "test:android-release-candidate": "node --test scripts/android-release-candidate.test.mjs",
     "ios:prepare": "bash scripts/prepare-ios-local.sh",
     "ios:open": "npx cap open ios",
     "ios:sim": "bash scripts/ios-simulator-smoke.sh",

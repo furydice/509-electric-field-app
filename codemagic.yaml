@@ -862,12 +862,44 @@ workflows:
       - name: Sync Capacitor
         script: npx cap sync android
 
-      - name: Build Android bundle (release AAB) + debug APK
+      - name: Build signed Android release candidate (AAB) + debug APK
         script: |
+          set +x
           set -euo pipefail
+          VERSION_CODE="${BUILD_NUMBER:-}"
+          if [[ ! "$VERSION_CODE" =~ ^[0-9]+$ ]] || (( VERSION_CODE < 4 )); then
+            echo "ERROR: BUILD_NUMBER must be an integer of 4 or greater so Play receives a new versionCode."
+            exit 1
+          fi
+          for REQUIRED_SETTING in CM_KEYSTORE_PATH CM_KEYSTORE_PASSWORD CM_KEY_ALIAS CM_KEY_PASSWORD; do
+            if [[ -z "${!REQUIRED_SETTING:-}" ]]; then
+              echo "ERROR: Codemagic signing setting $REQUIRED_SETTING is required for the release candidate."
+              exit 1
+            fi
+          done
+          if [[ ! -f "$CM_KEYSTORE_PATH" ]]; then
+            echo "ERROR: Codemagic did not provide a readable upload-keystore file."
+            exit 1
+          fi
+          echo "Building com.fiveohninelectric.field versionCode $VERSION_CODE, versionName 1.0."
           cd android
           chmod +x ./gradlew
-          ./gradlew bundleRelease assembleDebug -PversionCode="${BUILD_NUMBER:-1}" -PversionName="1.0" --stacktrace
+          ./gradlew bundleRelease assembleDebug -PversionCode="$VERSION_CODE" -PversionName="1.0" --stacktrace
+
+          AAB_COUNT=$(find app/build/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' | wc -l | tr -d '[:space:]')
+          if [[ "$AAB_COUNT" != "1" ]]; then
+            echo "ERROR: Expected exactly one release AAB; found $AAB_COUNT."
+            exit 1
+          fi
+          RELEASE_AAB=$(find app/build/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' | head -n 1)
+          SIGNATURE_REPORT=$(mktemp)
+          trap 'rm -f "$SIGNATURE_REPORT"' EXIT
+          if ! jarsigner -verify "$RELEASE_AAB" >"$SIGNATURE_REPORT" 2>&1 \
+            || ! grep -q '^jar verified\.$' "$SIGNATURE_REPORT"; then
+            echo "ERROR: Release AAB signature verification failed."
+            exit 1
+          fi
+          echo "Signed release AAB verified; artifacts remain in Codemagic for manual review/download."
 
     artifacts:
       - android/app/build/outputs/**/*.aab
